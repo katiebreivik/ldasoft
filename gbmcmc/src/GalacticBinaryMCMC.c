@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <math.h>
 #include <time.h>
 
@@ -32,7 +33,7 @@
 
 //#include <omp.h>
 
-/*************  PROTOTYPE DECLARATIONS FOR INTERNAL FUNCTIONS  **************/
+/* ***********  PROTOTYPE DECLARATIONS FOR INTERNAL FUNCTIONS  ************ */
 
 #include "LISA.h"
 #include "Constants.h"
@@ -55,12 +56,40 @@ void galactic_binary_rjmcmc(struct Orbit *orbit, struct Data *data, struct Model
 void data_mcmc(struct Orbit *orbit, struct Data **data, struct Model **model, struct Chain *chain, struct Flags *flags, struct Proposal **proposal, int ic);
 void noise_model_mcmc(struct Orbit *orbit, struct Data *data, struct Model *model, struct Model *trial, struct Chain *chain, struct Flags *flags, int ic);
 
+
+/* **************************  SIGNAL HANDLING  *************************** */
+
+#ifdef __GNUC__
+#define UNUSED __attribute__ ((unused))
+#else
+#define UNUSED
+#endif
+
+/* This is checked by the main loop to determine when to checkpoint */
+static volatile sig_atomic_t __gbmcmc_saveStateFlag = 0;
+
+/* This indicates the main loop should terminate */
+static volatile sig_atomic_t __gbmcmc_exitFlag = 0;
+
+
+/* Signal handler for SIGINT, which is produced by condor
+ * when evicting a job, or when the user presses Ctrl-C */
+static void catch_interrupt(UNUSED int sig, UNUSED siginfo_t *siginfo,UNUSED void *context)
+{
+
+  __gbmcmc_saveStateFlag=1;
+  __gbmcmc_exitFlag=1;
+}
+
+
+
+
 /* ============================  MAIN PROGRAM  ============================ */
 
 int main(int argc, char *argv[])
 {
     
-    time_t start, stop;
+    time_t start, stop, current;
     start = time(NULL);
     
     int NMAX = 10;   //max number of frequency & time segments
@@ -267,6 +296,13 @@ int main(int argc, char *argv[])
             fprintf(stdout,"   Checkpoint files found. Resuming chain\n");
             restore_chain_state(orbit, data, model, chain, flags, &mcmc_start);
         }
+        
+        // Install the handler for interrupt signal
+        struct sigaction sa;
+        sa.sa_sigaction=catch_interrupt;
+        if(sigaction(SIGINT,&sa,NULL)!=0)
+            fprintf(stderr,"WARNING: Cannot establish checkpoint on SIGINT.\n");
+        
         fprintf(stdout,"============================================\n\n");
     }
     
@@ -370,10 +406,6 @@ int main(int argc, char *argv[])
                     print_acceptance_rates(proposal[i], chain->NP, 0, stdout);
                 }
             }
-            
-            //save chain state to resume sampler
-            save_chain_state(data, model, chain, flags, mcmc);
-            
         }
         
         //dump waveforms to file, update avgLogL for thermodynamic integration
@@ -387,6 +419,36 @@ int main(int argc, char *argv[])
                     chain->avgLogL[ic] += model[chain->index[ic]][i]->logL + model[chain->index[ic]][i]->logLnorm;
             }
         }
+        
+        
+        //check current wall time
+        if(flags->resume && flags->limit)
+        {
+            current = (int)(time(NULL) - start);
+            if(current > flags->timeLimit)
+            {
+                __gbmcmc_saveStateFlag=1;
+                __gbmcmc_exitFlag=1;
+            }
+        }
+
+        //Save progress
+        if(__gbmcmc_saveStateFlag)
+        {
+          fprintf(stdout,"\nInterrupt/Timer message received\n");
+          fprintf(stdout,"Saving state to checkpoint directory\n");
+          save_chain_state(data, model, chain, flags, mcmc);
+          __gbmcmc_saveStateFlag = 0;
+          fflush(stdout);
+        }
+        
+        //Exit gracefully if interrupted
+        if(__gbmcmc_exitFlag)
+        {
+          int checkpoint_exit_code = 77;
+          exit(checkpoint_exit_code);
+        }
+
         
     }// end MCMC loop
     

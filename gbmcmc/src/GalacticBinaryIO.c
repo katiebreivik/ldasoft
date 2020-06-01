@@ -110,6 +110,15 @@ void print_run_settings(int argc, char **argv, struct Data *data_ptr, struct Orb
     else                fprintf(fptr,"  Verbose flag ........ DISABLED\n");
     if(flags->quiet)    fprintf(fptr,"  Quiet flag .......... ENABLED \n");
     else                fprintf(fptr,"  Quiet flag .......... DISABLED\n");
+    if(flags->resume)   fprintf(fptr,"  Checkpointing flag... ENABLED\n");
+    else                fprintf(fptr,"  Checkpointing flag... DISABLED\n");
+    if(flags->limit)
+    {
+        fprintf(fptr,"  Wall time limit...... ENABLED\n");
+        fprintf(fptr,"     limit............. %i s (%g hr)\n", (int)flags->timeLimit,flags->timeLimit/3600.);
+    }
+    else                fprintf(fptr,"  Wall time limit...... DISABLED\n");
+    
     if(flags->NINJ>0)
     {
         fprintf(fptr,"  Injected sources..... %i\n",flags->NINJ);
@@ -170,6 +179,9 @@ void print_usage()
     fprintf(stdout,"  -v | --verbose     : enable verbose output               \n");
     fprintf(stdout,"  -q | --quiet       : restrict output                     \n");
     fprintf(stdout,"  -d | --debug       : leaner settings for quick running   \n");
+    fprintf(stdout,"  -r | --resume      : enable checkpointing                \n");
+    fprintf(stdout,"  -l | --limit       : set time limit for run (11.5 hr)    \n");
+    fprintf(stdout,"                     : use --limit=X to customize time (s) \n");
     fprintf(stdout,"\n");
     
     //LISA
@@ -287,6 +299,8 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
     flags->updateCov   = 0;
     flags->match       = 0;
     flags->resume      = 0;
+    flags->limit       = 0;
+    flags->timeLimit   = 40500; //11:45:00 (For NCCS 12hr limit)
     flags->DMAX        = DMAX_default;
     flags->NMCMC       = 100000;
     flags->NBURN       = 100000;
@@ -348,14 +362,15 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
         {"steps",     required_argument, 0, 0},
         {"em-prior",  required_argument, 0, 0},
         {"catalog",   required_argument, 0, 0},
-        
+        {"limit",     optional_argument, 0,'l'},
+
         /* These options don’t set a flag.
          We distinguish them by their indices. */
         {"help",        no_argument, 0,'h'},
         {"verbose",     no_argument, 0,'v'},
         {"quiet",       no_argument, 0,'q'},
         {"debug",       no_argument, 0,'d'},
-        {"resume",      no_argument, 0, 0 },
+        {"resume",      no_argument, 0,'r'},
         {"sim-noise",   no_argument, 0, 0 },
         {"conf-noise",  no_argument, 0, 0 },
         {"frac-freq",   no_argument, 0, 0 },
@@ -380,7 +395,7 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
     
     //Loop through argv string and pluck out arguments
     struct Data *data_ptr = data[0];
-    while ((opt = getopt_long_only(argc, argv,"apl:b:", long_options, &long_index )) != -1)
+    while ((opt = getopt_long_only(argc, argv,"dhl::qrv", long_options, &long_index )) != -1)
     {
         switch (opt)
         {
@@ -410,7 +425,6 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
                 if(strcmp("no-rj",       long_options[long_index].name) == 0) flags->rj         = 0;
                 if(strcmp("fit-gap",     long_options[long_index].name) == 0) flags->gap        = 1;
                 if(strcmp("calibration", long_options[long_index].name) == 0) flags->calibration= 1;
-                if(strcmp("resume",      long_options[long_index].name) == 0) flags->resume=1;
                 if(strcmp("duration",    long_options[long_index].name) == 0)
                 {   data_ptr->T   = (double)atof(optarg);
                     data_ptr->sqT = sqrt(data_ptr->T);
@@ -522,6 +536,12 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
                 break;
             case 'q' : flags->quiet = 1;
                 break;
+            case 'r': flags->resume = 1;
+                break;
+            case 'l':
+                flags->limit = 1;
+                if(optarg!=NULL) flags->timeLimit = atoi(optarg);
+                break;
             default: print_usage();
                 exit(EXIT_FAILURE);
         }
@@ -586,6 +606,20 @@ void parse(int argc, char **argv, struct Data **data, struct Orbit *orbit, struc
     //  else data->T = (double)atof(data->duration);
     
     if(abort>0)exit(EXIT_FAILURE);
+    
+    // if resuming a checkpointed run, check that it hasn't finished before overwriting
+    if(flags->resume)
+    {
+        FILE *fptr = NULL;
+        if( (fptr = fopen("evidence.dat","r")) != NULL )
+        {
+            fprintf(stdout,"\nFound evidence file: evidence.dat\n");
+            fprintf(stdout,"Continuing will overwrite results\n");
+            fprintf(stdout,"Remove --resume flag to continue\n\n");
+            fclose(fptr);
+            exit(0);
+        }
+    }
     
     // run looks good to go, make directories and save command line
     mode_t process_mask = umask(0);

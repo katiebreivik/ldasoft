@@ -118,8 +118,11 @@ struct Flags
   int calibration; //are we marginalizing over calibration  uncertainty?
   int confNoise; //include model of confusion noise in Sn(f)
   int resume; //start chain state from previous run
+    int limit; //set wall time limit to play nice with schedulers
   int catalog; //use list of previously detected sources to clean bandwidth padding
   
+    int timeLimit; //cap on run (wall) time in seconds
+    
   char **injFile;
   char cdfFile[128];
   char covFile[128];
